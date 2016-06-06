@@ -1,0 +1,150 @@
+---
+title: "rnaseq_treatment_passage_animal"
+output: html_document
+---
+##Loading Libraries
+```{r echo=TRUE, message=FALSE}
+library(SummarizedExperiment)
+library(edgeR)
+library(limma)
+library(ggplot2)
+library(dplyr)
+
+sexp <- readRDS(gzcon(url("http://salomon24.scripps.edu/~ryan/Cyno-RNASeq-SummarizedExperiment.RDS")))
+sample_table <- as.data.frame(colData(sexp))
+gene_info <- as.data.frame(mcols(sexp))
+count_matrix <- assay(sexp)
+```
+
+##Normalization
+```{r}
+total_counts <- colSums(count_matrix)
+nf <- calcNormFactors(count_matrix, lib.size=total_counts, method="TMM")
+normalized_total_counts <- total_counts * nf
+```
+
+##Filter non expressed genes
+```{r}
+mean_log_cpm <- aveLogCPM(count_matrix, normalized_total_counts)
+filter_threshold <- 1
+keep_genes <- mean_log_cpm >= 1
+filtered_count_matrix <- count_matrix[keep_genes,]
+filtered_gene_info <- gene_info[keep_genes,]
+```
+
+#Model ~ Treatment
+
+##Fitting linear model
+```{r}
+design <- model.matrix(~ Treatment + Passage + Animal.ID, data=sample_table)
+v <- voom(filtered_count_matrix, design, lib.size=normalized_total_counts, plot=TRUE)
+v$genes <- filtered_gene_info
+fit <- lmFit(v, design)
+fit <- eBayes(fit, robust=TRUE)
+results <- topTable(fit, coef="TreatmentIFNg", adjust.method="BH", n=Inf)
+```
+
+##MDS plot
+```{r}
+mds <- data.frame(plotMDS(v)[c("x", "y")])
+mds <- cbind(mds, sample_table)
+p <- ggplot(mds) +
+  aes(x=x, y=y) +
+  xlab("PC1") + ylab("PC2") +
+  geom_point(size=3) +
+  coord_fixed(ratio=1) +
+  ggtitle("Sample MDS Plot")
+p + aes(color=Passage, shape=Animal.ID)
+```
+
+#Removing bad passage
+```{r}
+bad_animal <- "CN8351"
+selected_samples <- !(sample_table$Animal.ID %in% bad_animal)
+good_sample_table <- droplevels(sample_table[selected_samples,])
+good_filtered_count_matrix <- count_matrix[keep_genes,selected_samples]
+good_normalized_total_counts <- normalized_total_counts[selected_samples]
+```
+
+#Fitting new linear model
+```{r}
+good_design <- model.matrix(~ Treatment + Passage + Animal.ID, data=good_sample_table)
+good_v <- voom(good_filtered_count_matrix, good_design, lib.size=good_normalized_total_counts, plot=TRUE)
+good_v$genes <- filtered_gene_info
+good_fit <- lmFit(good_v, good_design)
+good_fit <- eBayes(good_fit, robust=TRUE)
+
+good_results <- topTable(good_fit, coef="TreatmentIFNg", adjust.method="BH", n=Inf)
+```
+
+##MA Plot
+```{r}
+ggplot(arrange(results, desc(P.Value))) +
+  aes(x=AveExpr, y=logFC,
+      color=ifelse(adj.P.Val <= 0.1, "FDR <= 10%", "FDR > 10%")) +
+  geom_point(size=0.1) +
+  scale_color_hue(name="Significance") +
+  theme(legend.justification=c(1,1), legend.position=c(1,1)) +
+  ggtitle("MA Plot, IFNg vs Control")
+```
+
+##New MA Plot
+```{r}
+ggplot(arrange(good_results, desc(P.Value))) +
+  aes(x=AveExpr, y=logFC,
+      color=ifelse(adj.P.Val <= 0.1, "FDR <= 10%", "FDR > 10%")) +
+  geom_point(size=0.1) +
+  scale_color_hue(name="Significance") +
+  theme(legend.justification=c(1,1), legend.position=c(1,1)) +
+  ggtitle("MA Plot, IFNg vs Control")
+```
+
+##P-value distribution
+```{r}
+ggplot(results) +
+  aes(x=P.Value) +
+  geom_histogram(aes(y=..density..), binwidth=0.025, boundary=0) +
+  geom_hline(yintercept=1) +
+  ggtitle("P-value distribution for Control vs Treatment")
+```
+##New P-value distribution
+```{r}
+ggplot(good_results) +
+  aes(x=P.Value) +
+  geom_histogram(aes(y=..density..), binwidth=0.025, boundary=0) +
+  geom_hline(yintercept=1) +
+  ggtitle("P-value distribution for Control vs Treatment")
+```
+##Significant Differentially expressed genes w.r.t. Treatment (FDR <= 10%)
+###Model
+```{r}
+table(results$adj.P.Val <= 0.1)
+```
+###New Model
+```{r}
+table(good_results$adj.P.Val <= 0.1)
+```
+
+##Significant Differentially expressed genes w.r.t. Animal.ID (FDR <= 10%)
+###Model
+```{r}
+animal.results <- topTable(fit, coef=c("Animal.ID6C63", "Animal.ID6C7", "Animal.ID6C84", "Animal.ID7C37", "Animal.ID8C8", "Animal.IDCN7314", "Animal.IDCN7875"), n=Inf)
+table(animal.results$adj.P.Val <= 0.1)
+```
+###New Model
+```{r}
+animal.good_results <- topTable(fit, coef=c("Animal.ID6C63", "Animal.ID6C7", "Animal.ID6C84", "Animal.ID7C37", "Animal.ID8C8", "Animal.IDCN7314", "Animal.IDCN7875"), n=Inf)
+table(animal.good_results$adj.P.Val <= 0.1)
+```
+
+##Significant Differentially expressed genes w.r.t. Passage (FDR <= 10%)
+###Model
+```{r}
+passage.results <- topTable(fit, coef=c("PassageP5", "PassageP6"), n=Inf)
+table(passage.results$adj.P.Val <= 0.1)
+```
+###New Model
+```{r}
+passage.good_results <- topTable(fit, coef=c("PassageP5", "PassageP6"), n=Inf)
+table(passage.good_results$adj.P.Val <= 0.1)
+```
